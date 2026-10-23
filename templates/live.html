@@ -47,13 +47,15 @@
   .advisory.warn .headline{color:var(--orange);}
   .advisory.crit .headline{color:var(--red);}
   .advisory .detail{font-size:17px; color:#d6dae2; line-height:1.4;}
+  .advisory .action{font-size:19px; font-weight:700; margin-top:12px; color:var(--accent);}
 
   /* Secondary findings — smaller, listed under the big banner */
   .also{flex:0 0 auto; display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px;}
   .also-item{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:8px 14px; font-size:14px;}
-  .also-item .dot{width:9px; height:9px; border-radius:50%;}
+  .also-item .dot{width:9px; height:9px; border-radius:50%; margin-top:5px; flex:0 0 auto;}
   .also-item.crit .dot{background:var(--red);}
   .also-item.warn .dot{background:var(--orange);}
+  .also-action{font-size:12px; color:var(--accent); margin-top:2px;}
 
   /* Channel tile grid */
   .channels{flex:1; display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; min-height:0;}
@@ -72,6 +74,7 @@
   .chan-tile.warn .chan-status{color:var(--orange);}
   .chan-tile.crit .chan-status{color:var(--red);}
   .chan-detail{font-size:12.5px; color:var(--muted); margin-top:4px; line-height:1.4;}
+  .chan-action{font-size:12.5px; color:var(--accent); margin-top:4px; font-weight:600; line-height:1.4;}
 
   .empty-state{flex:1; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:18px; text-align:center;}
 </style>
@@ -125,15 +128,31 @@ function loudnessSeverity(dev) {
   return 'ok';
 }
 
+function bandHzLabel(band) {
+  if (!band) return null;
+  const m = band.match(/(\d+)hz$/);
+  return m ? `${m[1]}Hz` : band;
+}
+
 function collectEvents() {
   const events = [];
+  const relByChannel = {};
+  for (const r of (state.relative_loudness || [])) relByChannel[r.channel] = r.deviation_db;
+
+  const TONAL_ACTION = {
+    mud: 'Cut 2-4dB around 200-500Hz',
+    harshness: 'Cut 2-4dB around 2-4kHz',
+    sibilance: 'Add a de-esser or cut 2-3dB around 5-10kHz',
+  };
+
   for (const [name, data] of Object.entries(state.channels || {})) {
     for (const f of (data.tonal_findings || [])) {
       events.push({
         severity: tonalSeverity(f.excess_db),
-        icon: {mud: '🌫', harshness: '🔊', sibilance: '🗯', resonant_peak: '🔔'}[f.type] || '❗',
+        icon: {mud: '💧', harshness: '🔊', sibilance: '🗯', resonant_peak: '🔔'}[f.type] || '❗',
         headline: `${name}: ${f.label}`,
         detail: f.message,
+        action: `${TONAL_ACTION[f.type] || 'Review manually'} on ${name}.`,
         channel: name,
       });
     }
@@ -141,11 +160,17 @@ function collectEvents() {
   for (const p of (state.masking_pairs || [])) {
     const sev = maskingSeverity(p.overall_severity);
     if (sev === 'ok') continue;
+    const devA = relByChannel[p.channel_a] ?? 0;
+    const devB = relByChannel[p.channel_b] ?? 0;
+    const louder = devA >= devB ? p.channel_a : p.channel_b;
+    const quieter = devA >= devB ? p.channel_b : p.channel_a;
+    const hz = bandHzLabel(p.worst_band);
     events.push({
       severity: sev,
       icon: '🎯',
       headline: `${p.channel_a} & ${p.channel_b} overlapping`,
-      detail: `Competing for the same frequency space around ${p.worst_band || 'several bands'} (score ${p.overall_score}).`,
+      detail: `Competing for the same frequency space${hz ? ' around ' + hz : ''} (score ${p.overall_score}).`,
+      action: `Pull ${louder} back 2-3dB${hz ? ' or notch-cut ' + hz + ' on it' : ''} — it's currently louder than ${quieter} in this clash.`,
       channel: null,
     });
   }
@@ -158,6 +183,9 @@ function collectEvents() {
       icon: r.deviation_db > 0 ? '🔥' : '🫥',
       headline: `${r.channel} ${dir}`,
       detail: `${r.deviation_db > 0 ? '+' : ''}${r.deviation_db}dB vs. the rest of the mix.`,
+      action: r.deviation_db > 0
+        ? `Pull ${r.channel}'s fader down ~${Math.round(Math.abs(r.deviation_db))}dB.`
+        : `Bring ${r.channel}'s fader up ~${Math.round(Math.abs(r.deviation_db))}dB — it's getting buried.`,
       channel: r.channel,
     });
   }
@@ -190,6 +218,7 @@ function render() {
       <div class="body">
         <div class="headline">${top.headline}</div>
         <div class="detail">${top.detail}</div>
+        <div class="action">→ ${top.action}</div>
       </div>`;
   }
 
@@ -197,7 +226,10 @@ function render() {
   also.innerHTML = events.slice(1, 6).map(e => `
     <div class="also-item ${e.severity}">
       <div class="dot"></div>
-      <div>${e.headline}</div>
+      <div>
+        <div>${e.headline}</div>
+        <div class="also-action">→ ${e.action}</div>
+      </div>
     </div>
   `).join('');
 
@@ -227,7 +259,7 @@ function render() {
           </div>
           <div>
             <div class="chan-status">${statusText}</div>
-            ${worst ? `<div class="chan-detail">${worst.detail}</div>` : ''}
+            ${worst ? `<div class="chan-detail">${worst.detail}</div><div class="chan-action">→ ${worst.action}</div>` : ''}
           </div>
         </div>`;
     }).join('');
