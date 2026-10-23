@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MixIntel — Live</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  :root{
+    --bg:#06070a; --panel:#111419; --panel2:#171b22; --border:#262b33;
+    --text:#f0f2f6; --muted:#8b93a1; --accent:#5ee6c8;
+    --red:#ff5d5d; --orange:#ffb454; --yellow:#e8d44d; --green:#5ee68a;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    overflow:hidden; /* this is a glance screen, not a scroll screen */
+  }
+  .wrap{height:100vh; display:flex; flex-direction:column; padding:28px 36px;}
+
+  /* Top bar: wordmark + live/stale status */
+  .topbar{display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; flex:0 0 auto;}
+  .wordmark{font-size:20px; font-weight:800; letter-spacing:.02em;}
+  .wordmark span{color:var(--accent);}
+  .status{display:flex; align-items:center; gap:10px; font-size:15px; font-weight:700;}
+  .status .dot{width:13px; height:13px; border-radius:50%; background:var(--muted);}
+  .status.live .dot{background:var(--green); box-shadow:0 0 10px var(--green); animation:pulse 1.6s ease-in-out infinite;}
+  .status.stale .dot{background:var(--orange);}
+  .status .ts{color:var(--muted); font-weight:400; font-variant-numeric:tabular-nums;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+
+  /* Advisory banner — the single most important thing right now, huge */
+  .advisory{
+    flex:0 0 auto; border-radius:22px; padding:34px 40px; margin-bottom:24px;
+    display:flex; align-items:center; gap:24px; transition:background .3s, border-color .3s;
+    border:2px solid var(--border); background:var(--panel);
+  }
+  .advisory.ok{border-color:rgba(94,230,138,.4); background:rgba(94,230,138,.08);}
+  .advisory.warn{border-color:rgba(255,180,84,.5); background:rgba(255,180,84,.1);}
+  .advisory.crit{border-color:rgba(255,93,93,.55); background:rgba(255,93,93,.12);}
+  .advisory .icon{font-size:56px; line-height:1; flex:0 0 auto;}
+  .advisory .body{flex:1;}
+  .advisory .headline{font-size:34px; font-weight:800; line-height:1.15; margin-bottom:6px;}
+  .advisory.ok .headline{color:var(--green);}
+  .advisory.warn .headline{color:var(--orange);}
+  .advisory.crit .headline{color:var(--red);}
+  .advisory .detail{font-size:17px; color:#d6dae2; line-height:1.4;}
+
+  /* Secondary findings — smaller, listed under the big banner */
+  .also{flex:0 0 auto; display:flex; gap:10px; flex-wrap:wrap; margin-bottom:24px;}
+  .also-item{display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:8px 14px; font-size:14px;}
+  .also-item .dot{width:9px; height:9px; border-radius:50%;}
+  .also-item.crit .dot{background:var(--red);}
+  .also-item.warn .dot{background:var(--orange);}
+
+  /* Channel tile grid */
+  .channels{flex:1; display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; min-height:0;}
+  .chan-tile{
+    background:var(--panel); border:2px solid var(--border); border-radius:18px; padding:20px;
+    display:flex; flex-direction:column; justify-content:space-between; transition:border-color .3s, background .3s;
+  }
+  .chan-tile.crit{border-color:rgba(255,93,93,.5); background:rgba(255,93,93,.07);}
+  .chan-tile.warn{border-color:rgba(255,180,84,.5); background:rgba(255,180,84,.07);}
+  .chan-tile.clean{border-color:rgba(94,230,138,.25);}
+  .chan-name{font-size:22px; font-weight:800; margin-bottom:10px;}
+  .chan-meter{height:10px; background:var(--panel2); border-radius:6px; overflow:hidden; margin-bottom:14px;}
+  .chan-meter-fill{height:100%; background:var(--accent); border-radius:6px; transition:width .4s;}
+  .chan-status{font-size:14px; font-weight:700; display:flex; align-items:center; gap:6px;}
+  .chan-tile.clean .chan-status{color:var(--green);}
+  .chan-tile.warn .chan-status{color:var(--orange);}
+  .chan-tile.crit .chan-status{color:var(--red);}
+  .chan-detail{font-size:12.5px; color:var(--muted); margin-top:4px; line-height:1.4;}
+
+  .empty-state{flex:1; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:18px; text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="wordmark">Mix<span>Intel</span></div>
+    <div class="status" id="status">
+      <div class="dot"></div>
+      <div>Connecting…</div>
+      <div class="ts" id="ts"></div>
+    </div>
+  </div>
+
+  <div class="advisory ok" id="advisory">
+    <div class="icon">⏳</div>
+    <div class="body">
+      <div class="headline">Waiting for signal…</div>
+      <div class="detail">Start live_listener.py and feed it OSC data to see this update.</div>
+    </div>
+  </div>
+
+  <div class="also" id="also"></div>
+
+  <div class="channels" id="channels">
+    <div class="empty-state">No channels reporting yet.</div>
+  </div>
+</div>
+
+<script>
+const socket = io();
+let state = {last_update: null, ticker_text: null, channels: {}, relative_loudness: [], masking_pairs: []};
+
+const SEV_COLOR = {crit: 'var(--red)', warn: 'var(--orange)', ok: 'var(--green)'};
+
+function tonalSeverity(excess_db) {
+  if (excess_db >= 12) return 'crit';
+  if (excess_db >= 6) return 'warn';
+  return 'ok';
+}
+function maskingSeverity(sev) {
+  if (sev === 'high') return 'crit';
+  if (sev === 'moderate') return 'warn';
+  return 'ok';
+}
+function loudnessSeverity(dev) {
+  const a = Math.abs(dev);
+  if (a >= 6) return 'crit';
+  if (a >= 3) return 'warn';
+  return 'ok';
+}
+
+function collectEvents() {
+  const events = [];
+  for (const [name, data] of Object.entries(state.channels || {})) {
+    for (const f of (data.tonal_findings || [])) {
+      events.push({
+        severity: tonalSeverity(f.excess_db),
+        icon: {mud: '🌫', harshness: '🔊', sibilance: '🗯', resonant_peak: '🔔'}[f.type] || '❗',
+        headline: `${name}: ${f.label}`,
+        detail: f.message,
+        channel: name,
+      });
+    }
+  }
+  for (const p of (state.masking_pairs || [])) {
+    const sev = maskingSeverity(p.overall_severity);
+    if (sev === 'ok') continue;
+    events.push({
+      severity: sev,
+      icon: '🎯',
+      headline: `${p.channel_a} & ${p.channel_b} overlapping`,
+      detail: `Competing for the same frequency space around ${p.worst_band || 'several bands'} (score ${p.overall_score}).`,
+      channel: null,
+    });
+  }
+  for (const r of (state.relative_loudness || [])) {
+    const sev = loudnessSeverity(r.deviation_db);
+    if (sev === 'ok') continue;
+    const dir = r.deviation_db > 0 ? 'running hot' : 'buried';
+    events.push({
+      severity: sev,
+      icon: r.deviation_db > 0 ? '🔥' : '🫥',
+      headline: `${r.channel} ${dir}`,
+      detail: `${r.deviation_db > 0 ? '+' : ''}${r.deviation_db}dB vs. the rest of the mix.`,
+      channel: r.channel,
+    });
+  }
+  const order = {crit: 0, warn: 1, ok: 2};
+  events.sort((a, b) => order[a.severity] - order[b.severity]);
+  return events;
+}
+
+function render() {
+  const events = collectEvents();
+  const advisory = document.getElementById('advisory');
+  const also = document.getElementById('also');
+  const channelsEl = document.getElementById('channels');
+
+  // Advisory banner = worst event, or an all-clear state
+  if (events.length === 0) {
+    const hasChannels = Object.keys(state.channels || {}).length > 0;
+    advisory.className = 'advisory ok';
+    advisory.innerHTML = `
+      <div class="icon">✅</div>
+      <div class="body">
+        <div class="headline">${hasChannels ? 'All clear' : 'Waiting for signal…'}</div>
+        <div class="detail">${hasChannels ? 'No masking, tonal, or balance issues above threshold right now.' : 'Start live_listener.py and feed it OSC data to see this update.'}</div>
+      </div>`;
+  } else {
+    const top = events[0];
+    advisory.className = 'advisory ' + top.severity;
+    advisory.innerHTML = `
+      <div class="icon">${top.icon}</div>
+      <div class="body">
+        <div class="headline">${top.headline}</div>
+        <div class="detail">${top.detail}</div>
+      </div>`;
+  }
+
+  // Secondary findings (everything after the top one)
+  also.innerHTML = events.slice(1, 6).map(e => `
+    <div class="also-item ${e.severity}">
+      <div class="dot"></div>
+      <div>${e.headline}</div>
+    </div>
+  `).join('');
+
+  // Channel tiles
+  const names = Object.keys(state.channels || {});
+  if (names.length === 0) {
+    channelsEl.innerHTML = '<div class="empty-state">No channels reporting yet.</div>';
+  } else {
+    channelsEl.innerHTML = names.map(name => {
+      const data = state.channels[name];
+      const chanEvents = events.filter(e => e.channel === name);
+      const worst = chanEvents[0];
+      const tileClass = worst ? worst.severity : 'clean';
+      const rms = data.overall_rms || 0;
+      const meterPct = Math.min(100, Math.max(2, rms * 300));
+      let statusText = '🟢 Clean';
+      if (worst) {
+        const dot = worst.severity === 'crit' ? '🔴' : '🟠';
+        const label = worst.headline.includes(': ') ? worst.headline.split(': ').slice(1).join(': ') : worst.headline;
+        statusText = `${dot} ${label}`;
+      }
+      return `
+        <div class="chan-tile ${tileClass === 'crit' ? 'crit' : tileClass === 'warn' ? 'warn' : 'clean'}">
+          <div>
+            <div class="chan-name">${name}</div>
+            <div class="chan-meter"><div class="chan-meter-fill" style="width:${meterPct}%;"></div></div>
+          </div>
+          <div>
+            <div class="chan-status">${statusText}</div>
+            ${worst ? `<div class="chan-detail">${worst.detail}</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  }
+}
+
+function updateStatus() {
+  const statusEl = document.getElementById('status');
+  const tsEl = document.getElementById('ts');
+  if (!state.last_update) {
+    statusEl.className = 'status';
+    statusEl.querySelector('div:nth-child(2)').textContent = 'No connection yet';
+    tsEl.textContent = '';
+    return;
+  }
+  const secsAgo = Math.round(Date.now() / 1000 - state.last_update);
+  const isStale = secsAgo > 15;
+  statusEl.className = 'status ' + (isStale ? 'stale' : 'live');
+  statusEl.querySelector('div:nth-child(2)').textContent = isStale ? 'STALE' : 'LIVE';
+  tsEl.textContent = `${secsAgo}s ago`;
+}
+
+socket.on('tick', (payload) => {
+  state = payload;
+  render();
+  updateStatus();
+});
+
+fetch('/state').then(r => r.json()).then(payload => {
+  state = payload;
+  render();
+  updateStatus();
+});
+
+setInterval(updateStatus, 1000);
+</script>
+</body>
+</html>
