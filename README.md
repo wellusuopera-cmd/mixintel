@@ -33,10 +33,13 @@ tested end-to-end through a real BlackHole 2ch loopback).
 
 ### Setup (run once on the Mac mini)
 
-1. **Get this folder onto the Mac mini** — git clone/pull, or copy via
-   AirDrop/Google Drive/USB. (SSH access from the MacBook to the Mac mini
-   was never fully confirmed working in an earlier session — if it's up,
-   `scp`/`rsync` works too.)
+1. **Get this folder onto the Mac mini:**
+   ```
+   git clone https://github.com/wellusuopera-cmd/mixintel.git
+   cd mixintel
+   ```
+   (Private repo — the Mac mini needs to be logged into the same
+   `wellusuopera-cmd` GitHub account, or use `gh auth login` there first.)
 
 2. **Run setup:**
    ```
