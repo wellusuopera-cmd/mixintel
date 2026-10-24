@@ -107,8 +107,15 @@ def relative_loudness(channel_rms: dict[str, float]) -> list[dict]:
     return results
 
 
-def masking_pairs(channel_bands: dict[str, tuple]) -> list[dict]:
-    names = list(channel_bands.keys())
+def masking_pairs(channel_bands: dict[str, tuple], exclude: set[str] | None = None) -> list[dict]:
+    """exclude: sum/bus channel names (Master, VocSum, DrSum, etc.) that
+    should never be pairwise-compared against their own member channels --
+    a sum bus's audio mathematically CONTAINS its members' audio, so any
+    "masking" comparison against it is a guaranteed false-positive flood,
+    not real intel. Sum channels still get their own loudness/tonal checks
+    elsewhere, just skipped here."""
+    exclude = exclude or set()
+    names = [n for n in channel_bands.keys() if n not in exclude]
     pairs = []
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
@@ -150,6 +157,7 @@ def run(args: argparse.Namespace) -> None:
     channel_map = parse_channel_map(args.channels)
     channel_indices = sorted(channel_map.keys())
     max_channel = max(channel_indices) + 1
+    sum_channels = {n.strip() for n in args.sum_channels.split(",") if n.strip()}
 
     capture = RollingCapture(channel_indices, args.samplerate, args.window_seconds)
 
@@ -181,7 +189,7 @@ def run(args: argparse.Namespace) -> None:
                 channel_rms[name] = float(np.sqrt(np.mean(mono ** 2))) if mono.size else 0.0
                 tonal[name] = tonal_findings(name, energies, alphas)
 
-            pairs = masking_pairs(channel_bands) if len(channel_bands) >= 2 else []
+            pairs = masking_pairs(channel_bands, exclude=sum_channels) if len(channel_bands) >= 2 else []
             rel = relative_loudness(channel_rms)
             ticker_text = render_ticker(channel_bands, rel, pairs, tonal)
 
@@ -215,6 +223,12 @@ def main() -> None:
     parser.add_argument("--list-devices", action="store_true", help="List input-capable audio devices and exit.")
     parser.add_argument("--device", default=None, help="Device name or substring (e.g. 'X32', 'Dante'). Omit for system default.")
     parser.add_argument("--channels", default="", help="Channel map, 1-indexed, e.g. '1:Vocal,2:Guitar,3:Drums'.")
+    parser.add_argument("--sum-channels", default="",
+                         help="Comma-separated names (matching the ones you gave in --channels) of sum/bus "
+                              "channels (Master, VocSum, DrSum, etc.) to exclude from pairwise masking "
+                              "comparison -- a sum bus's audio contains its own members' audio, so comparing "
+                              "it against them always reads as total overlap, which is a false positive, not "
+                              "real intel. These channels still get their own loudness/tonal checks.")
     parser.add_argument("--samplerate", type=int, default=48000)
     parser.add_argument("--window-seconds", type=float, default=2.0, help="Analysis window length.")
     parser.add_argument("--tick-seconds", type=float, default=3.0, help="How often to re-analyze + push.")
