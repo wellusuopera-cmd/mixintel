@@ -93,8 +93,17 @@ class RollingCapture:
             return {idx: buf.copy() for idx, buf in self._buffers.items()}
 
 
-def relative_loudness(channel_rms: dict[str, float]) -> list[dict]:
-    names = list(channel_rms.keys())
+def relative_loudness(channel_rms: dict[str, float], exclude: set[str] | None = None) -> list[dict]:
+    """exclude: sum/bus channels (Master, VocSum, etc.) are not peers of the
+    individual channels -- they're the aggregate OF those peers, so they're
+    always louder by construction (summed signal). Including them in the
+    "average of the rest of the mix" baseline skews every individual
+    channel's comparison (this produced the +40dB readings across the
+    board). Excluded channels just don't get a relative-loudness entry at
+    all here -- their own absolute level is still visible via their own
+    RMS meter on the live view, just not as a "vs. peers" comparison."""
+    exclude = exclude or set()
+    names = [n for n in channel_rms.keys() if n not in exclude]
     if len(names) < 2:
         return []
     rms_db = {n: 20.0 * np.log10(max(channel_rms[n], 1e-12)) for n in names}
@@ -190,7 +199,7 @@ def run(args: argparse.Namespace) -> None:
                 tonal[name] = tonal_findings(name, energies, alphas)
 
             pairs = masking_pairs(channel_bands, exclude=sum_channels) if len(channel_bands) >= 2 else []
-            rel = relative_loudness(channel_rms)
+            rel = relative_loudness(channel_rms, exclude=sum_channels)
             ticker_text = render_ticker(channel_bands, rel, pairs, tonal)
 
             print("\n" + "=" * 60)
